@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -11,11 +12,24 @@ import (
 	"sc/checker"
 )
 
+type stringSlice []string
+
+func (s *stringSlice) String() string {
+	return strings.Join(*s, ",")
+}
+
+func (s *stringSlice) Set(val string) error {
+	*s = append(*s, val)
+	return nil
+}
+
 func main() {
 	dictPath := flag.String("dict", "", "Path to dictionary file (optional)")
+	ignoreFile := flag.String("ignore-file", "", "Path to file containing custom words and phrases to ignore")
+	var ignoreFlags stringSlice
+	flag.Var(&ignoreFlags, "ignore", "Custom words or phrases to ignore (comma-separated or specified multiple times)")
 	flag.Parse()
 
-	// 1. Load Dictionary
 	var dict checker.Dictionary
 	var err error
 	if *dictPath != "" {
@@ -28,15 +42,43 @@ func main() {
 		os.Exit(2)
 	}
 
-	// 2. Initialize Tokenizer and Checker
 	tokenizer := checker.NewPlainTextTokenizer()
 	sc := checker.New(dict, tokenizer)
+
+	var customEntries []string
+	for _, item := range ignoreFlags {
+		for _, part := range strings.Split(item, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				customEntries = append(customEntries, part)
+			}
+		}
+	}
+
+	ignoreFilePath := *ignoreFile
+	if ignoreFilePath == "" {
+		if _, err := os.Stat(".scignore"); err == nil {
+			ignoreFilePath = ".scignore"
+		}
+	}
+
+	if ignoreFilePath != "" {
+		fileEntries, err := loadIgnoreFile(ignoreFilePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading ignore file: %v\n", err)
+			os.Exit(2)
+		}
+		customEntries = append(customEntries, fileEntries...)
+	}
+
+	for _, entry := range customEntries {
+		sc.AddCustom(entry)
+	}
 
 	args := flag.Args()
 	var allTypos []checker.Typo
 	var checkedFilesCount int
 
-	// 3. Process Input (Stdin vs File/Directory paths)
 	if len(args) == 0 {
 		if isStdinPiped() {
 			typos, err := sc.Check(os.Stdin, "stdin")
@@ -47,7 +89,7 @@ func main() {
 			allTypos = append(allTypos, typos...)
 			checkedFilesCount = 1
 		} else {
-			fmt.Fprintln(os.Stderr, "Usage: sc [-dict path] <file-or-directory>...")
+			fmt.Fprintln(os.Stderr, "Usage: sc [-dict path] [-ignore words/phrases] [-ignore-file path] <file-or-directory>...")
 			os.Exit(2)
 		}
 	} else {
@@ -74,7 +116,6 @@ func main() {
 		}
 	}
 
-	// 4. Output Results (Silence is golden if no typos)
 	if len(allTypos) > 0 {
 		fmt.Fprintln(os.Stderr, "Typos found:")
 		for _, t := range allTypos {
@@ -88,7 +129,28 @@ func main() {
 	}
 }
 
-// isStdinPiped checks if data is being piped into stdin rather than from an interactive terminal.
+func loadIgnoreFile(path string) ([]string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var entries []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		entries = append(entries, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
 func isStdinPiped() bool {
 	stat, err := os.Stdin.Stat()
 	if err != nil {
@@ -97,7 +159,6 @@ func isStdinPiped() bool {
 	return (stat.Mode() & os.ModeCharDevice) == 0
 }
 
-// collectFiles walks all given file or directory paths and returns valid files to check.
 func collectFiles(paths []string) ([]string, error) {
 	var files []string
 	for _, p := range paths {
@@ -105,7 +166,6 @@ func collectFiles(paths []string) ([]string, error) {
 			if err != nil {
 				return err
 			}
-			// Skip hidden directories (like .git)
 			if d.IsDir() && strings.HasPrefix(d.Name(), ".") && d.Name() != "." {
 				return filepath.SkipDir
 			}

@@ -3,13 +3,14 @@ package checker
 import (
 	"bufio"
 	"io"
+	"strings"
 	"unicode"
 )
 
 type Token struct {
 	Word string
 	Line int
-	Col  int 
+	Col  int
 }
 
 type Tokenizer interface {
@@ -73,6 +74,17 @@ func extractWordsFromLine(line string, lineNum int) []Token {
 	}
 
 	return tokens
+}
+
+func extractWordStrings(text string) []string {
+	var words []string
+	lines := strings.Split(text, "\n")
+	for _, line := range lines {
+		for _, tok := range extractWordsFromLine(line, 1) {
+			words = append(words, strings.ToLower(tok.Word))
+		}
+	}
+	return words
 }
 
 func isWordChar(r rune) bool {
